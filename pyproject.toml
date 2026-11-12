@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memidx"
+version = "0.1.0"
+description = "Section-level hybrid search (SQLite FTS5 + optional local embeddings) over the Markdown files of a git repository."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "marchapunkt" }]
+dependencies = [
+    "tzdata; sys_platform == 'win32'",   # named time zones on Windows
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing :: Indexing",
+]
+
+[project.optional-dependencies]
+# Local embeddings (EmbeddingGemma-300m ONNX on CPU). Model files are not bundled: see `memidx model download`.
+vectors = [
+    "numpy>=1.26",
+    "onnxruntime>=1.18",
+    "tokenizers>=0.15",
+    "huggingface_hub>=0.23",
+]
+# MCP server (`memidx mcp`, `memidx serve --mcp`).
+mcp = ["mcp>=1.2"]
+dev = ["pytest>=8", "numpy>=1.26"]
+
+[project.urls]
+Repository = "https://github.com/marchapunkt/memidx"
+
+[project.scripts]
+memidx = "memidx.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
