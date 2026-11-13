@@ -61,27 +61,30 @@ To use them you choose a model preset explicitly:
 ```bash
 pip install ".[vectors]"                    # numpy, onnxruntime, tokenizers, huggingface_hub
 memidx model list                           # presets with their license and whether it is OSI-approved
-memidx model download embeddinggemma-300m --accept-license
-# then, in the user config or a --config file:  vectors = true  and  model = "embeddinggemma-300m"
+memidx model download arctic-embed-m-v2.0   # ~328 MB from Hugging Face, checksums verified
+# then, in the user config or a --config file:  vectors = true  and  model = "arctic-embed-m-v2.0"
 ```
 
-**The only preset today, `embeddinggemma-300m`, is distributed by Google under the Gemma Terms of Use, which is
-not an OSI-approved open-source license.** `memidx model download` refuses to fetch a preset whose license is not
-OSI-approved unless you pass `--accept-license`; read the terms first. memidx never downloads a model on its own.
+The only preset today, `arctic-embed-m-v2.0`, is the int8 ONNX export of
+[Snowflake/snowflake-arctic-embed-m-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0)
+(multilingual, 768 dimensions, CPU), distributed by Snowflake under the Apache License 2.0. Every shipped preset
+has an OSI-approved license; `memidx model download` would refuse a preset without one unless you pass
+`--accept-license`. memidx never downloads a model on its own. Changing the model discards the stored vectors;
+the next `memidx update` embeds everything again (about 8 sections per second on a 2024 laptop CPU).
 With `vectors = true` but no `model` (and no `embedder` hook), `update`, `search`, `serve` and `mcp` stop with exit
 code 2 instead of guessing a model. If the extra or the model files are missing, memidx falls back to full text and
 prints one notice line.
 
 ### Docker
 
-The image was built and smoke-tested on Linux (amd64) with full-text search; the vector path inside the container
-is not tested. It installs the `vectors` and `mcp` extras, runs as a non-root user, and uses `memidx` as PID 1, which handles SIGTERM. Vectors stay off unless
+The image was built and smoke-tested on Linux (amd64) with full-text search and with vectors (model download,
+`update`, `search`). It installs the `vectors` and `mcp` extras, runs as a non-root user, and uses `memidx` as PID 1, which handles SIGTERM. Vectors stay off unless
 you set `MEMIDX_VECTORS=1` and `MEMIDX_MODEL=<preset>`.
 
 ```bash
 docker build -t memidx .
 docker run --rm -e HF_HUB_OFFLINE=0 -v memidx-models:/models memidx \
-  model download embeddinggemma-300m --accept-license          # Gemma Terms of Use apply
+  model download arctic-embed-m-v2.0
 docker run -d --name memidx -p 127.0.0.1:8800:8800 -p 127.0.0.1:8801:8801 \
   -v /path/to/repo:/corpus:ro -v memidx-data:/data -v memidx-models:/models memidx
 ```
@@ -332,5 +335,5 @@ Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 ## License
 
 MIT, see `LICENSE`. Third-party notices: `THIRD_PARTY_NOTICES.md`. memidx ships no embedding model. The only model
-preset today (`embeddinggemma-300m`) is not part of this repository and is distributed by Google under the Gemma
-Terms of Use, which is not an OSI-approved license.
+preset today (`arctic-embed-m-v2.0`) is not part of this repository and is distributed by Snowflake under the
+Apache License 2.0.

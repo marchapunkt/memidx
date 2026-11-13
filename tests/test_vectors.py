@@ -39,7 +39,7 @@ def create_fake(cfg=None):          # factory for the `embedder = "module:factor
     return FakeEmbedder()
 
 
-PRESET = "embeddinggemma-300m"
+PRESET = "arctic-embed-m-v2.0"
 TARGET = "memory/decisions/topic-search.md"
 ZONES = (ZoneRule("scratch", 0.6, basename="worklog*"), ZoneRule("longterm", 1.0, prefix="memory/"))
 

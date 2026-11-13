@@ -517,9 +517,8 @@ def load_config(path=None, corpus=None, db=None, env=None, *, isolated=False, co
     if not cfg.model_cache:
         kw["model_cache"] = default_model_cache(env)
     model = cfg.model.strip()
-    if model and model not in _embed.PRESETS:
-        raise ValueError(f"unknown model preset {model!r}; available: {', '.join(sorted(_embed.PRESETS))} "
-                         "(see `memidx model list`)")
+    if model:
+        _embed.get_preset(model)        # ValueError (exit 2) for an unknown or removed preset
     kw["model"] = model
     kw["env_used"] = tuple(env_used)
     kw["notices"] = tuple(notices)
@@ -595,7 +594,7 @@ log_path = ""
 # Vectors are opt-in. They need `pip install memidx[vectors]`, an explicit model preset and
 # `memidx model download <preset>`. See `memidx model list` for presets and their licenses.
 vectors = false
-# model = "embeddinggemma-300m"   # NOT under an OSI-approved license: read `memidx model list` first
+# model = "arctic-embed-m-v2.0"   # Apache-2.0; `memidx model list` shows all presets and their licenses
 # model_cache = "~/.cache/memidx/models"
 # embedder = "package.module:factory"   # your own embedder; imports and runs that code
 

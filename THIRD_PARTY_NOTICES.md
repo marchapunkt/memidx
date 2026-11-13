@@ -3,9 +3,7 @@
 ## markdown-memory (MIT)
 
 `src/memidx/embed.py` contains code derived from `markdown-memory` 0.5.0
-(https://github.com/hishamkaram/markdown-memory, author Hesham Karm): the EmbeddingGemma model
-constants (repository, pinned revision, graph file, file manifest with sizes and checksums), the query and
-document prompt prefixes, the tokenizer settings, the batching, the use of the `sentence_embedding` output with
+(https://github.com/hishamkaram/markdown-memory, author Hesham Karm): the tokenizer settings, the batching, the use of the `sentence_embedding` output with
 L2 normalization, and the onnxruntime session options. memidx does not depend on that package.
 
 ```
@@ -32,12 +30,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## EmbeddingGemma-300m (not included)
+## snowflake-arctic-embed-m-v2.0 (not included)
 
-The embedding model is not part of memidx and is never bundled. `memidx model download` fetches the ONNX export
-`onnx-community/embeddinggemma-300m-ONNX` (pinned revision) from Hugging Face. The model is distributed by Google
-under the Gemma Terms of Use (https://ai.google.dev/gemma/terms). You must read and accept those terms yourself
-before you download or use the model.
+The embedding model is not part of memidx and is never bundled. `memidx model download arctic-embed-m-v2.0`
+fetches `onnx/model_int8.onnx` and `tokenizer.json` of `Snowflake/snowflake-arctic-embed-m-v2.0` (pinned
+revision) from Hugging Face. The model is distributed by Snowflake under the Apache License 2.0
+(https://www.apache.org/licenses/LICENSE-2.0).
 
 ## Runtime dependencies
 

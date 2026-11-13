@@ -17,11 +17,20 @@ see `SECURITY.md` and the "Security model" section of the README.
   existing `<repo>/.memidx/index.db` is no longer read; run `memidx update` once to build the new index, then
   delete the old directory. Explicit `db`, `MEMIDX_DB` and `--db` still work.
 - **Vectors are opt-in and need an explicit model.** `vectors` now defaults to `false`. With `vectors = true` you
-  must set `model = "embeddinggemma-300m"` (or an `embedder` hook) in a trusted source; otherwise `update`,
-  `search`, `serve` and `mcp` exit with code 2. Existing indexes keep their vectors (the stored embedder name is
-  unchanged).
-- **`memidx model download` needs the preset name**, and `--accept-license` for a preset whose license is not
-  OSI-approved (today: the only preset, `embeddinggemma-300m`, under the Gemma Terms of Use).
+  must set `model = "arctic-embed-m-v2.0"` (or an `embedder` hook) in a trusted source; otherwise `update`,
+  `search`, `serve` and `mcp` exit with code 2.
+- **New embedding model, EmbeddingGemma removed.** The only preset is now `arctic-embed-m-v2.0`
+  (Snowflake/snowflake-arctic-embed-m-v2.0, int8 ONNX, 768 dimensions, Apache License 2.0). EmbeddingGemma is
+  gone because the Gemma Terms of Use are not an OSI-approved license; `model = "embeddinggemma-300m"` is a
+  configuration error that names the replacement. Vectors of a 0.1.0 index are discarded and embedded again on
+  the next `memidx update` (download the new model first). On a private corpus of 3,453 Markdown files (40
+  natural-language questions, 25 keyword queries) the new model found the expected file as often as
+  EmbeddingGemma, within one question, and embedded about twice as fast.
+- **`memidx model download` needs the preset name.** A preset whose license is not OSI-approved would also need
+  `--accept-license`; no shipped preset has such a license.
+- The 0.1.0 module constants in `memidx.embed` (`REPOSITORY`, `REVISION`, `MODEL_FILE`, `MANIFEST`, `DIMENSION`,
+  `MAX_TOKENS`, `QUERY_PROMPT`, `DOCUMENT_PROMPT`, `LICENSE_NOTICE`) and `GemmaEmbedder` are removed; use
+  `memidx.embed.PRESETS` and `OnnxEmbedder`.
 - **`MEMIDX_URL` is no longer read.** Remote search needs an explicit `--url`.
 - **Exit codes changed.** 1 = no hit (was 0), 2 = usage or configuration error including unknown zone and a query
   that is empty after normalization (was 0 with no hits), 3 = no usable index (was 2), git failure in a work tree,

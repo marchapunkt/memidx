@@ -4,10 +4,11 @@ memidx ships no model. A model is a named preset (PRESETS) with a pinned revisio
 its license. `memidx model list` shows them; `memidx model download <preset>` fetches one (a preset whose
 license is not OSI-approved needs `--accept-license`). Nothing is ever downloaded implicitly.
 
-The only preset today, `embeddinggemma-300m` (4-bit ONNX graph, 768 dimensions, CPU), is distributed under the
-Gemma Terms of Use, which is NOT an OSI-approved license. Its constants, prompts, batching and pooling follow
-`markdown-memory` 0.5.0 (MIT, Hesham Karm); see THIRD_PARTY_NOTICES.md. Only the needed parts are reimplemented
-on top of onnxruntime, tokenizers, numpy and huggingface_hub (extra `memidx[vectors]`).
+The only preset today, `arctic-embed-m-v2.0` (Snowflake/snowflake-arctic-embed-m-v2.0, int8 ONNX graph,
+768 dimensions, CPU), is distributed under the Apache License 2.0. Tokenizer settings, batching, the use of the
+`sentence_embedding` output with L2 normalization and the session options follow `markdown-memory` 0.5.0 (MIT,
+Hesham Karm); see THIRD_PARTY_NOTICES.md. Only the needed parts are reimplemented on top of onnxruntime,
+tokenizers, numpy and huggingface_hub (extra `memidx[vectors]`).
 
 Embedder hook
 -------------
@@ -60,42 +61,45 @@ class ModelPreset:
                 "accept those terms yourself.")
 
 
-_GEMMA_FILE = "onnx/model_q4.onnx"
+_ARCTIC_FILE = "onnx/model_int8.onnx"
 PRESETS = {
-    "embeddinggemma-300m": ModelPreset(
-        name="embeddinggemma-300m",
-        repository="onnx-community/embeddinggemma-300m-ONNX",
-        revision="5090578d9565bb06545b4552f76e6bc2c93e4a66",
-        model_file=_GEMMA_FILE,
+    "arctic-embed-m-v2.0": ModelPreset(
+        name="arctic-embed-m-v2.0",
+        repository="Snowflake/snowflake-arctic-embed-m-v2.0",
+        revision="95c2741480856aa9666782eb4afe11959938017f",
+        model_file=_ARCTIC_FILE,
         files={
-            _GEMMA_FILE: (519_322, "ad1dfee81a70f7944b9b9d1cc6e48075b832881cf33fab2f2b248be78f3f0043"),
-            _GEMMA_FILE + "_data": (196_725_760, "599962c3143b040de2dd05e5975be3e9091dd067cacc6a8f7186e3203bab9e02"),
-            "tokenizer.json": (20_323_312, "4dda02faaf32bc91031dc8c88457ac272b00c1016cc679757d1c441b248b9c47"),
+            _ARCTIC_FILE: (310_916_060, "03d923bb1850ebdccb068e2f3abd8aa43fe81c50d07d037ef103fe3d0fb78e3b"),
+            "tokenizer.json": (17_083_009, "f1cc44ad7faaeec47241864835473fd5403f2da94673f3f764a77ebcb0a803ec"),
         },
-        query_prompt="task: search result | query: ",      # prompts from the EmbeddingGemma model card
-        document_prompt="title: none | text: ",
+        query_prompt="query: ",             # model card: prefix on queries only
+        document_prompt="",
         dimension=768,
-        max_tokens=512,
-        license_name="the Gemma Terms of Use",
-        license_url="https://ai.google.dev/gemma/terms",
-        osi_approved=False,
-        download_size="~218 MB",
-        dir_name="embeddinggemma-300m-onnx-5090578d9565",
+        max_tokens=512,                     # the model accepts more; 512 keeps CPU indexing time bounded
+        license_name="the Apache License 2.0",
+        license_url="https://www.apache.org/licenses/LICENSE-2.0",
+        osi_approved=True,
+        download_size="~328 MB",
+        dir_name="snowflake-arctic-embed-m-v2.0-95c274148085",
     ),
 }
 
-# 0.1.0 names, kept for scripts that imported them (values of the only preset)
-_P = PRESETS["embeddinggemma-300m"]
-REPOSITORY, REVISION, MODEL_FILE, MANIFEST = _P.repository, _P.revision, _P.model_file, _P.files
-DIMENSION, MAX_TOKENS, QUERY_PROMPT, DOCUMENT_PROMPT = _P.dimension, _P.max_tokens, _P.query_prompt, _P.document_prompt
-LICENSE_NOTICE = _P.license_notice
+# Presets that existed in an earlier version: a config that still names one gets the reason, not just "unknown".
+REMOVED_PRESETS = {
+    "embeddinggemma-300m": "it was removed in 0.2.0 because the Gemma Terms of Use are not an OSI-approved "
+                           "license; use \"arctic-embed-m-v2.0\" and run `memidx update` to rebuild the vectors",
+}
+
 BATCH_SIZE = 4
 
 
 def get_preset(name):
-    p = PRESETS.get((name or "").strip())
+    key = (name or "").strip()
+    p = PRESETS.get(key)
     if p is None:
-        raise ValueError(f"unknown model preset {name!r}; available: {', '.join(sorted(PRESETS))}")
+        why = f": {REMOVED_PRESETS[key]}" if key in REMOVED_PRESETS else ""
+        raise ValueError(f"unknown model preset {name!r}{why}; available: {', '.join(sorted(PRESETS))} "
+                         "(see `memidx model list`)")
     return p
 
 
@@ -200,7 +204,8 @@ class OnnxEmbedder:
                 from tokenizers import Tokenizer
                 tok = Tokenizer.from_file(str(self.dir / "tokenizer.json"))
                 tok.enable_truncation(max_length=self.preset.max_tokens)
-                tok.enable_padding()
+                if tok.padding is None:     # keep the padding token the model's tokenizer.json declares
+                    tok.enable_padding()
                 opts = onnxruntime.SessionOptions()
                 opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
                 if self.threads > 0:
@@ -237,9 +242,6 @@ class OnnxEmbedder:
 
     def embed_query(self, text):
         return self._embed([self.preset.query_prompt + text])[0]
-
-
-GemmaEmbedder = OnnxEmbedder     # 0.1.0 name
 
 
 def set_embedder(obj):

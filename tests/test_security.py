@@ -97,7 +97,7 @@ def make(cfg=None):
 def test_corpus_embedder_is_never_imported(repo):
     write(repo / "evilmod.py", EVILMOD)
     write(repo / "memidx.toml", 'embedder = "evilmod:make"\nvectors = true\n')
-    env = {"MEMIDX_VECTORS": "1", "MEMIDX_MODEL": "embeddinggemma-300m"}   # vectors on: the hook would be used
+    env = {"MEMIDX_VECTORS": "1", "MEMIDX_MODEL": "arctic-embed-m-v2.0"}   # vectors on: the hook would be used
     p = run(repo, "update", env_extra=env, check=0)
     assert "embedder" in p.stderr and "user config" in p.stderr and p.stderr.count("ignored key(s)") == 1
     p = run(repo, "search", "backup", env_extra=env, check=0)
@@ -146,7 +146,7 @@ def test_corpus_file_allowed_keys_still_apply(corpus):
 
 def test_every_other_key_is_ignored_with_one_notice(corpus, tmp_path):
     lines = ['embedder = "x:y"', f"db = {toml_str(tmp_path / 'x.db')}", f"log_path = {toml_str(tmp_path / 'l')}",
-             f"model_cache = {toml_str(tmp_path / 'm')}", "vectors = true", 'model = "embeddinggemma-300m"',
+             f"model_cache = {toml_str(tmp_path / 'm')}", "vectors = true", 'model = "arctic-embed-m-v2.0"',
              'private_prefixes = ["a/"]', 'own_client_prefix = ""', 'private_mode = "all"', "graph_workers = 9",
              "git_safe_directory = true", "totally_unknown = 1", "[server]", 'host = "0.0.0.0"', "port = 1"]
     write(corpus / "memidx.toml", "\n".join(lines) + "\n")
@@ -608,39 +608,73 @@ def test_unknown_model_preset_is_a_config_error(corpus, tmp_path):
     assert rc == 2 and "unknown model preset" in err
 
 
-def test_model_download_of_non_osi_preset_needs_accept_license(monkeypatch, tmp_path):
+PRESET = "arctic-embed-m-v2.0"
+
+
+@pytest.fixture
+def non_osi_preset(monkeypatch):
+    """No shipped preset has a non-OSI license; the --accept-license gate is tested with an artificial one."""
+    p = embed.ModelPreset(name="restricted", repository="example/restricted", revision="0" * 40, model_file="m.onnx",
+                          files={"m.onnx": (1, "0" * 64)}, dimension=4, license_name="the Example Terms of Use",
+                          license_url="https://example.invalid/terms", osi_approved=False, dir_name="restricted")
+    monkeypatch.setitem(embed.PRESETS, p.name, p)
+    return p
+
+
+def test_model_download_of_non_osi_preset_needs_accept_license(monkeypatch, tmp_path, non_osi_preset):
     def forbidden(*a, **kw):
         raise AssertionError("network access attempted")
     monkeypatch.setattr(embed, "download_model", forbidden)
     hub = type(sys)("huggingface_hub")
     hub.snapshot_download = forbidden
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
-    rc, out, err = main("model", "download", "embeddinggemma-300m", "--cache-dir", str(tmp_path / "m"))
-    assert rc == 2 and "Gemma Terms of Use" in err and "https://ai.google.dev/gemma/terms" in err
+    rc, out, err = main("model", "download", "restricted", "--cache-dir", str(tmp_path / "m"))
+    assert rc == 2 and "Example Terms of Use" in err and "https://example.invalid/terms" in err
     assert "NOT an OSI-approved" in err and "--accept-license" in err and not (tmp_path / "m").exists()
     with pytest.raises(SystemExit):                                  # the preset name is required
         main("model", "download")
     assert main("model", "download", "nosuch")[0] == 2
 
 
-def test_model_download_with_accept_license_calls_downloader(monkeypatch, tmp_path):
+def test_model_download_with_accept_license_calls_downloader(monkeypatch, tmp_path, non_osi_preset):
     seen = []
     monkeypatch.setattr(embed, "download_model", lambda cache, preset, log=print: seen.append((cache, preset.name)))
-    rc, _, _ = main("model", "download", "embeddinggemma-300m", "--accept-license", "--cache-dir", str(tmp_path))
-    assert rc == 0 and seen == [(str(tmp_path), "embeddinggemma-300m")]
+    rc, _, _ = main("model", "download", "restricted", "--accept-license", "--cache-dir", str(tmp_path))
+    assert rc == 0 and seen == [(str(tmp_path), "restricted")]
 
 
-def test_model_list_shows_license_and_osi_status():
+def test_model_download_of_osi_preset_needs_no_flag(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(embed, "download_model", lambda cache, preset, log=print: seen.append((cache, preset.name)))
+    rc, _, _ = main("model", "download", PRESET, "--cache-dir", str(tmp_path))
+    assert rc == 0 and seen == [(str(tmp_path), PRESET)]
+
+
+def test_model_list_shows_license_and_osi_status(non_osi_preset):
     rc, out, _ = main("model", "list")
-    assert rc == 0 and "embeddinggemma-300m" in out and "Gemma Terms of Use" in out and "OSI-approved: NO" in out
+    assert rc == 0 and PRESET in out and "Apache License 2.0" in out and "OSI-approved: yes" in out
+    assert "restricted" in out and "OSI-approved: NO" in out
     assert "ships no model" in out
 
 
+def test_every_shipped_preset_has_an_osi_approved_license():
+    assert embed.PRESETS and all(p.osi_approved for p in embed.PRESETS.values())
+    assert not any("gemma" in n.lower() or "gemma" in p.repository.lower() for n, p in embed.PRESETS.items())
+
+
+def test_removed_gemma_preset_is_a_config_error_with_the_reason(corpus, tmp_path):
+    write(user_config_path(), 'vectors = true\nmodel = "embeddinggemma-300m"\n')
+    rc, _, err = main("--corpus", str(corpus), "--db", str(tmp_path / "i.db"), "update")
+    assert rc == 2 and "removed in 0.2.0" in err and PRESET in err and not (tmp_path / "i.db").exists()
+    rc, _, err = main("model", "download", "embeddinggemma-300m", "--accept-license", "--cache-dir", str(tmp_path / "m"))
+    assert rc == 2 and "removed in 0.2.0" in err and not (tmp_path / "m").exists()
+
+
 def test_preset_table_structure():
-    p = embed.PRESETS["embeddinggemma-300m"]
-    for f in ("repository", "revision", "files", "query_prompt", "document_prompt", "dimension", "max_tokens",
-              "license_name", "license_url"):
+    p = embed.PRESETS[PRESET]
+    for f in ("repository", "revision", "files", "query_prompt", "dimension", "max_tokens", "license_name",
+              "license_url", "download_size", "dir_name"):
         assert getattr(p, f), f
-    assert p.osi_approved is False and all(len(v) == 2 and len(v[1]) == 64 for v in p.files.values())
-    # the embedder name stored in 0.1.0 indexes is unchanged, so existing vectors stay valid
-    assert p.embedder_name == "onnx-community/embeddinggemma-300m-ONNX@5090578d9565/onnx/model_q4.onnx"
+    assert p.model_file in p.files and "tokenizer.json" in p.files
+    assert len(p.revision) == 40 and all(len(v) == 2 and len(v[1]) == 64 for v in p.files.values())
+    assert p.embedder_name == "Snowflake/snowflake-arctic-embed-m-v2.0@95c274148085/onnx/model_int8.onnx"
