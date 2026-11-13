@@ -1,5 +1,7 @@
 # memidx
 
+**Version 0.2.0** · [Changelog](CHANGELOG.md) · [Security](SECURITY.md) · MIT license
+
 memidx indexes the Markdown files of a git repository as **sections** and answers a query with only the matching
 sections (path, heading path, line range, text), limited by a token budget. It is built for agents and people who
 need the relevant part of a large notes or docs repository, not whole files.
