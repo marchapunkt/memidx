@@ -39,6 +39,7 @@ def create_fake(cfg=None):          # factory for the `embedder = "module:factor
     return FakeEmbedder()
 
 
+PRESET = "embeddinggemma-300m"
 TARGET = "memory/decisions/topic-search.md"
 ZONES = (ZoneRule("scratch", 0.6, basename="worklog*"), ZoneRule("longterm", 1.0, prefix="memory/"))
 
@@ -64,7 +65,7 @@ def vidx(idx):
     for i in range(5):
         write(c, f"memory/note{i}.md", f"Note{i}", "## Teil\n\nvektor " + "backup tunnel " * (i + 1))
     write(c, "projects/p/worklog.md", "Stand", "## Teil\n\nsemantisch vektor semantisch.")
-    db = idx.build(embed=True, zones=ZONES)
+    db = idx.build(embed=True, zones=ZONES, vectors=True)
     idx.fake = fake
     return idx, db
 
@@ -136,7 +137,7 @@ def test_index_without_dvec_table():
 
 
 def _rank(idx, db, question, w_doc):
-    idx.configure(zones=ZONES, ranking={"rrf_doc": w_doc})
+    idx.configure(zones=ZONES, vectors=True, ranking={"rrf_doc": w_doc})
     paths = [t["path"] for t in core.search(db, question, k=10, budget_tokens=100000, per_file=1)["hits"]]
     return paths.index(TARGET) + 1 if TARGET in paths else 99
 
@@ -150,7 +151,7 @@ def test_paraphrase_ranked_better_by_document_vector(vidx):
 
 def test_hybrid_finds_paraphrase_that_fts_misses(vidx):
     idx, db = vidx
-    idx.configure(zones=ZONES)
+    idx.configure(zones=ZONES, vectors=True)
     q = "fernzugang"
     fts = [t["path"] for t in core.search(db, q, k=10, per_file=1, hybrid=False)["hits"]]
     hyb = [t["path"] for t in core.search(db, q, k=10, per_file=1)["hits"]]
@@ -171,7 +172,7 @@ def test_embedder_change_discards_vectors(vidx):
 
 def test_embedder_hook_from_config(idx):
     embed.set_embedder(None)
-    db = idx.build({"memory/a.md": "# A\n\ntunnel"}, embed=True, embedder="test_vectors:create_fake")
+    db = idx.build({"memory/a.md": "# A\n\ntunnel"}, embed=True, embedder="test_vectors:create_fake", vectors=True)
     assert db.execute("SELECT count(*) FROM vec").fetchone()[0] == 1
 
 
@@ -179,7 +180,7 @@ def test_fts_only_without_vector_dependencies(idx, monkeypatch, capsys):
     for mod in ("numpy", "onnxruntime", "tokenizers"):
         monkeypatch.setitem(sys.modules, mod, None)              # import now raises ImportError
     embed._NOTICE_SHOWN.clear()
-    db = idx.build({"memory/a.md": "# A\n\nTunnel und Fernzugang.\n"}, embed=True)
+    db = idx.build({"memory/a.md": "# A\n\nTunnel und Fernzugang.\n"}, embed=True, vectors=True, model=PRESET)
     assert db.execute("SELECT count(*) FROM vec").fetchone()[0] == 0
     res = core.search(db, "fernzugang")
     assert [t["path"] for t in res["hits"]] == ["memory/a.md"]
@@ -191,7 +192,7 @@ def test_missing_model_files_fall_back(idx, capsys):
     embed._NOTICE_SHOWN.clear()
     if not embed.deps_available():
         pytest.skip("vector extra not installed")
-    db = idx.build({"memory/a.md": "# A\n\nword\n"}, embed=True)
+    db = idx.build({"memory/a.md": "# A\n\nword\n"}, embed=True, vectors=True, model=PRESET)
     assert core.search(db, "word")["hits"]
     assert "memidx model download" in capsys.readouterr().err
 

@@ -24,7 +24,19 @@ def quiet(*a):
 
 
 @pytest.fixture(autouse=True)
-def _clean_state(monkeypatch):
+def user_dirs(monkeypatch, tmp_path_factory):
+    """Per-test user config, cache and home directories: tests never read or write the real user profile
+    (the default index lives in the user cache since 0.2.0). Subprocesses inherit these variables."""
+    home = tmp_path_factory.mktemp("home")
+    dirs = {"HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home / "config", "XDG_CACHE_HOME": home / "cache",
+            "APPDATA": home / "config", "LOCALAPPDATA": home / "cache"}
+    for k, v in dirs.items():
+        monkeypatch.setenv(k, str(v))
+    return dirs
+
+
+@pytest.fixture(autouse=True)
+def _clean_state(monkeypatch, user_dirs):
     for k in list(os.environ):
         if k.startswith("MEMIDX_"):
             monkeypatch.delenv(k, raising=False)

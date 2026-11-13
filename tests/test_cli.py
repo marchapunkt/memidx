@@ -48,7 +48,8 @@ def test_init_update_search_status_get(repo):
     p = run(repo, "search", "--list", "nightly")
     assert p.stdout.startswith("1. notes/backup.md:")
     st = json.loads(run(repo, "status").stdout)
-    assert st["files"] == 2 and st["config"].endswith("memidx.toml") and st["vectors"] == 0
+    assert st["files"] == 2 and st["vectors"] == 0 and st["index"] == {"usable": True}
+    assert [(os.path.basename(c["path"]), c["kind"]) for c in st["config"]] == [("memidx.toml", "corpus")]
     p = run(repo, "get", "notes/backup.md:12-20")
     assert "Restore" in p.stdout and "Schedule" not in p.stdout
     p = run(repo, "update")
@@ -57,13 +58,17 @@ def test_init_update_search_status_get(repo):
 
 def test_search_without_index_fails_clearly(tmp_path):
     p = run(tmp_path, "search", "x", check=False)
-    assert p.returncode == 2 and "memidx update" in p.stderr
+    assert p.returncode == 3 and "memidx update" in p.stderr
 
 
 def test_bad_config_fails_clearly(tmp_path):
-    (tmp_path / "memidx.toml").write_text("nonsense = 1\n", encoding="utf-8")
-    p = run(tmp_path, "update", check=False)
+    bad = tmp_path / "trusted.toml"
+    bad.write_text("nonsense = 1\n", encoding="utf-8")
+    p = run(tmp_path, "--config", str(bad), "update", check=False)
     assert p.returncode == 2 and "unknown config key" in p.stderr
+    (tmp_path / "memidx.toml").write_text("nonsense = 1\n", encoding="utf-8")   # untrusted file: ignored, one notice
+    p = run(tmp_path, "update", check=False)
+    assert p.returncode == 0 and p.stderr.count("ignored key(s)") == 1 and "nonsense" in p.stderr
 
 
 def test_corpus_and_db_flags(repo, tmp_path):

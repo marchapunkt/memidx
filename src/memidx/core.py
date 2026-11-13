@@ -20,10 +20,27 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from functools import lru_cache
+from pathlib import Path
 
 from . import embed as _embed
 from .config import load_config
 from .lang import Normalizer
+
+# ------------------------------------------------------------------ errors
+class NoIndex(RuntimeError):
+    """No usable index (missing file, schema missing, empty, other normalization). CLI exit code 3."""
+
+    def __init__(self, detail, message):
+        super().__init__(message)
+        self.detail = detail
+        self.message = message
+
+
+class GitError(RuntimeError):
+    """`git ls-files` failed inside a git work tree. CLI exit code 3."""
+
+
+POSIX = os.name == "posix"
 
 # ------------------------------------------------------------------ configuration
 _CFG = None
@@ -384,19 +401,41 @@ def _excluded(rel, exclude):
     return any(rel == x or rel.startswith(x.rstrip("/") + "/") for x in exclude)
 
 
-def iter_md(corpus, exclude=None):
-    """Relative paths of all Markdown files: in a git checkout only tracked files (git ls-files), else the tree."""
-    exclude = get_config().exclude if exclude is None else exclude
+GIT_MODE = "git-tracked files"
+WALK_MODE = "all *.md files, not a git work tree"
+
+
+def git_argv(corpus, safe_directory=False):
+    """git command for listing tracked Markdown files. A repository-local config must not start programs:
+    fsmonitor and the untracked cache are off; safe.directory only when the user trusts foreign owners."""
+    argv = ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"]
+    if safe_directory:
+        argv += ["-c", "safe.directory=*"]
+    return argv + ["-C", corpus, "ls-files", "-z", "--", "*.md"]
+
+
+def md_files(corpus, exclude=None, safe_directory=None):
+    """(relative paths of all Markdown files, mode). In a git work tree (`.git` exists) only tracked files;
+    a failing git is an error (GitError), never a silent fallback. Otherwise all *.md files in the tree."""
+    cfg = get_config()
+    exclude = cfg.exclude if exclude is None else exclude
+    safe_directory = cfg.git_safe_directory if safe_directory is None else safe_directory
     if os.path.exists(os.path.join(corpus, ".git")):     # directory, or file for worktrees/submodules
+        env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
         try:
-            out = subprocess.run(["git", "-c", "safe.directory=*", "-C", corpus, "ls-files", "-z", "--", "*.md"],
-                                 capture_output=True, check=True).stdout
-            for rel in sorted(out.decode("utf-8", "ignore").split("\0")):
-                if rel and not _excluded(rel, exclude):
-                    yield rel
-            return
-        except (OSError, subprocess.CalledProcessError):
-            pass
+            p = subprocess.run(git_argv(corpus, safe_directory), capture_output=True, env=env)
+        except OSError as e:
+            raise GitError(f"{corpus} is a git work tree, but git could not be run: {e}") from e
+        if p.returncode != 0:
+            err = p.stderr.decode("utf-8", "replace").strip()
+            msg = f"`git ls-files` failed in {corpus} (exit {p.returncode}): {err[:500]}"
+            if "dubious ownership" in err or "safe.directory" in err:
+                msg += ("\nThe repository belongs to another user. If you trust it, set git_safe_directory = true in the "
+                        "user config or --config file, MEMIDX_GIT_SAFE_DIRECTORY=1, or pass --trust-repo-owner.")
+            raise GitError(msg)
+        out = [rel for rel in sorted(p.stdout.decode("utf-8", "ignore").split("\0")) if rel and not _excluded(rel, exclude)]
+        return out, GIT_MODE
+    out = []
     for dp, dn, fn in os.walk(corpus):
         dn[:] = sorted(d for d in dn if d not in (".git", "node_modules", ".memidx") and not d.startswith(".next"))
         rel_dir = os.path.relpath(dp, corpus).replace(os.sep, "/")
@@ -405,15 +444,62 @@ def iter_md(corpus, exclude=None):
             continue
         for f in sorted(fn):
             if f.endswith(".md"):
-                yield os.path.relpath(os.path.join(dp, f), corpus).replace(os.sep, "/")
+                out.append(os.path.relpath(os.path.join(dp, f), corpus).replace(os.sep, "/"))
+    return out, WALK_MODE
 
 
-def _connect_rw(dbpath):
-    d = os.path.dirname(os.path.abspath(dbpath))
-    os.makedirs(d, exist_ok=True)
-    db = sqlite3.connect(dbpath)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.executescript(SCHEMA)
+def iter_md(corpus, exclude=None):
+    """Relative paths of all Markdown files (see md_files)."""
+    yield from md_files(corpus, exclude)[0]
+
+
+def secure_makedirs(d, private_leaf=False):
+    """Creates the missing directories of `d` with mode 0700. `private_leaf`: also chmod an existing `d` to 0700
+    (only for directories memidx owns, such as the default index directory)."""
+    d = leaf = os.path.abspath(d)
+    missing = []
+    while not os.path.isdir(d):
+        missing.append(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    for m in reversed(missing):
+        try:
+            os.mkdir(m, 0o700)
+        except FileExistsError:
+            pass
+    if private_leaf and POSIX and os.path.isdir(leaf):
+        try:
+            os.chmod(leaf, 0o700)
+        except OSError:
+            pass
+
+
+def restrict_files(dbpath):
+    """chmod 0600 on the database and its -wal/-shm files (POSIX; Windows relies on the profile ACL)."""
+    if not POSIX:
+        return
+    for f in (dbpath, dbpath + "-wal", dbpath + "-shm"):
+        try:
+            if os.path.exists(f):
+                os.chmod(f, 0o600)
+        except OSError:
+            pass
+
+
+def _connect_rw(dbpath, private_dir=False):
+    """The only place that creates a database (used by update)."""
+    secure_makedirs(os.path.dirname(os.path.abspath(dbpath)), private_leaf=private_dir)
+    old = os.umask(0o077) if POSIX else None
+    try:
+        db = sqlite3.connect(dbpath)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.executescript(SCHEMA)
+    finally:
+        if old is not None:
+            os.umask(old)
+    restrict_files(dbpath)
     for col in ("ersetzt_durch", "gueltig_bis", "art", "gueltig_ab", "bestaetigt_am"):   # validity + memory entries
         try:
             db.execute(f"ALTER TABLE docs ADD COLUMN {col} TEXT")
@@ -424,15 +510,19 @@ def _connect_rw(dbpath):
 
 def update(corpus, dbpath, embed=False, log=print):
     cfg = get_config()
-    db = _connect_rw(dbpath)
+    files, mode = md_files(corpus, cfg.exclude, cfg.git_safe_directory)   # before the database: git errors create nothing
+    log(f"Files: {mode} ({len(files)})")
+    private_dir = bool(cfg.db_is_default) and os.path.abspath(dbpath) == os.path.abspath(cfg.db or "")
+    db = _connect_rw(dbpath, private_dir)
     try:
-        return _update(db, corpus, dbpath, embed, log, cfg)
+        return _update(db, corpus, dbpath, embed, log, cfg, files)
     finally:
         db.close()
+        restrict_files(dbpath)
         invalidate_cache()
 
 
-def _update(db, corpus, dbpath, embed, log, cfg):
+def _update(db, corpus, dbpath, embed, log, cfg, files=None):
     ver = db.execute("SELECT v FROM meta WHERE k='scrub'").fetchone()
     if not ver or ver[0] != SCRUB_VERSION:   # rules changed: re-chunk all files (vectors of equal sections stay)
         db.execute("UPDATE docs SET hash=''")
@@ -453,7 +543,7 @@ def _update(db, corpus, dbpath, embed, log, cfg):
     zones_db = {p: (z, pr) for p, z, pr in db.execute("SELECT path, zone, prior FROM docs")}
     rezoned = 0
     seen, changed, same, n_chunks, t0 = set(), 0, 0, 0, time.time()
-    for rel in iter_md(corpus, cfg.exclude):
+    for rel in (files if files is not None else md_files(corpus, cfg.exclude)[0]):
         full = os.path.join(corpus, rel)
         try:
             with open(full, encoding="utf-8", errors="ignore") as f:
@@ -606,17 +696,74 @@ def log_query(client, query, k, budget, zone, res, secs):
         with _LOG_LOCK:
             if os.path.exists(path) and os.path.getsize(path) > 5_000_000:
                 os.replace(path, path + ".1")
-            with open(path, "a", encoding="utf-8") as f:
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            if POSIX:
+                try:
+                    os.fchmod(fd, 0o600)
+                except OSError:
+                    pass
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
 
 # ------------------------------------------------------------------ search
-def open_db(dbpath):
-    db = sqlite3.connect(dbpath, check_same_thread=False)
+def _db_uri(dbpath, mode):
+    return Path(dbpath).resolve().as_uri() + f"?mode={mode}"
+
+
+def open_db(dbpath, readonly=False):
+    """Opens an existing index; never creates one (only update() does). `readonly`: SQLite `mode=ro`."""
+    db = sqlite3.connect(_db_uri(dbpath, "ro" if readonly else "rw"), uri=True, check_same_thread=False)
     db.row_factory = sqlite3.Row
     return db
+
+
+_REQUIRED_TABLES = {"docs", "chunks", "fts", "meta", "links"}
+
+
+def connection_problem(db):
+    """None for a usable index, else (detail, message)."""
+    try:
+        names = {r[0] for r in db.execute("SELECT name FROM sqlite_master")}
+        if not _REQUIRED_TABLES <= names:
+            return ("schema", "the index has no memidx schema; run `memidx update`")
+        if db.execute("SELECT count(*) FROM docs").fetchone()[0] == 0:
+            return ("empty", "the index is empty (no Markdown files were indexed); run `memidx update`")
+        row = db.execute("SELECT v FROM meta WHERE k='norm'").fetchone()
+        sig = normalizer().signature
+        if not row or row[0] != sig:
+            return ("normalization", f"the index was built with normalization {row[0] if row else 'none'!r}, the "
+                                     f"configuration needs {sig!r}; run `memidx update`")
+    except sqlite3.Error as e:
+        return ("unreadable", f"the index cannot be read ({e}); run `memidx update`")
+    return None
+
+
+def index_problem(dbpath):
+    """None for a usable index file, else (detail, message). Opens read-only; creates nothing."""
+    if not dbpath or not os.path.isfile(dbpath):
+        return ("missing", f"no index at {dbpath}; run `memidx update` first")
+    try:
+        db = open_db(dbpath, readonly=True)
+    except sqlite3.Error as e:
+        return ("unreadable", f"the index at {dbpath} cannot be opened ({e})")
+    try:
+        p = connection_problem(db)
+    finally:
+        db.close()
+    if p:
+        return (p[0], f"{dbpath}: {p[1]}")
+    return None
+
+
+def open_index(dbpath):
+    """Read-only connection to a usable index, or NoIndex."""
+    p = index_problem(dbpath)
+    if p:
+        raise NoIndex(*p)
+    return open_db(dbpath, readonly=True)
 
 
 @lru_cache(maxsize=100_000)   # the same section lines are re-scored by many queries
@@ -649,11 +796,38 @@ _CHUNK_SQL = ("SELECT c.id, c.hpath, c.l1, c.l2, c.body, d.path, d.zone, d.prior
               "FROM chunks c JOIN docs d ON d.id=c.doc WHERE c.id IN ({})")
 
 
+# Reasons for an empty result (machine-readable `reason`, human `message`) and their CLI exit codes.
+EXIT_CODES = {"no_match": 1, "empty_query": 2, "unknown_zone": 2, "no_index": 3}
+NO_MATCH_MESSAGE = ("no section matched. memidx is a pointer, not proof: normalization, stopwords, stemming, the "
+                    "per-file cap, the token budget and private filtering can hide existing text. Use `git grep` or "
+                    "`grep` to check that something is absent.")
+
+
+def index_zones(db):
+    return sorted(r[0] for r in db.execute("SELECT DISTINCT zone FROM docs") if r[0] is not None)
+
+
 def search(db, query, k=3, budget_tokens=800, zone=None, per_file=2, sec_chars=1400, hybrid=True, client=None,
            private_ok=None, include_invalid=False, today=None):
+    """Result dict {query, hints, hits, tokens}. An empty result also carries `reason` (no_match, empty_query,
+    unknown_zone) and `message`; `private_excluded: true` when private paths were not searched."""
     t_start = time.time()
     ok = sees_private(client) if private_ok is None else private_ok
-    res = _search(db, query, k, budget_tokens, zone, per_file, sec_chars, hybrid, ok, include_invalid, today)
+    if not terms(query, True):
+        words = re.findall(r"\w+", query or "")
+        msg = ("the query is empty" if not words else
+               "the query has no searchable word after normalization (dropped: " + ", ".join(words[:20]) + ")")
+        res = {"query": query, "hints": hints(query), "hits": [], "tokens": 0, "reason": "empty_query",
+               "message": msg, "dropped": words}
+    elif zone and zone not in (zs := index_zones(db)):
+        res = {"query": query, "hints": hints(query), "hits": [], "tokens": 0, "reason": "unknown_zone",
+               "message": f"unknown zone {zone!r}; zones in the index: {', '.join(zs) or '(none)'}", "zones": zs}
+    else:
+        res = _search(db, query, k, budget_tokens, zone, per_file, sec_chars, hybrid, ok, include_invalid, today)
+        if not res["hits"]:
+            res["reason"], res["message"] = "no_match", NO_MATCH_MESSAGE
+    if private_prefixes() and not ok:
+        res["private_excluded"] = True
     if client:
         log_query(client, query, k, budget_tokens, zone, res, time.time() - t_start)
     return res
@@ -943,7 +1117,7 @@ def _compute_graph(db, limit, zone, k, with_score, private_ok=False):
 
         def work(p):
             if not hasattr(local, "db"):
-                local.db = open_db(dbfile)
+                local.db = open_db(dbfile, readonly=True)
                 with conns_lock:
                     conns.append(local.db)
             return related(local.db, p, k, private_ok=private_ok)
@@ -997,7 +1171,7 @@ def graph(db, limit=300, zone=None, k=5, with_score=False, client=None):
     f = _db_file(db)
     if not f:
         return _graph(db, limit, zone, k, with_score, ok)
-    own = open_db(f)
+    own = open_db(f, readonly=True)
     try:
         return _graph(own, limit, zone, k, with_score, ok)
     finally:
@@ -1007,7 +1181,7 @@ def graph(db, limit=300, zone=None, k=5, with_score=False, client=None):
 def warm_graph(dbpath):
     """Precomputes the default graph (after start and after index changes)."""
     try:
-        db = open_db(dbpath)
+        db = open_index(dbpath)
         try:
             graph(db, 300)
         finally:
@@ -1035,13 +1209,19 @@ def _stale_mark(t):
     return "[STALE" + (f", superseded by {t['superseded_by']}" if t.get("superseded_by") else "") + "]"
 
 
+def _empty_line(res):
+    return "(no hits)" + (f" [{res['reason']}] {res['message']}" if res.get("reason") else "")
+
+
 def render_text(res):
     parts = [f"[Hint] {h}" for h in res["hints"]]
     for t in res["hits"]:
         mark = _memory_mark(t) or _stale_mark(t)
         mark = "  " + mark if mark else ""
         parts.append(f'== {t["path"]} :: {t["section"]} (lines {t["lines"]}, {t["zone"]}){mark}\n{t["text"]}')
-    return "\n\n".join(parts) if parts else "(no hits)"
+    if not res["hits"] and (res.get("reason") or not parts):
+        parts.append(_empty_line(res))
+    return "\n\n".join(parts)
 
 
 def render_list(res):
@@ -1051,7 +1231,9 @@ def render_list(res):
         mark = _memory_mark(t) or _stale_mark(t)
         mark = " " + mark if mark else ""
         parts.append(f"{i}. {t['path']}:{t['lines']} [{t['zone']}]{mark} {t['section']} — {first}")
-    return "\n".join(parts) if parts else "(no hits)"
+    if not res["hits"] and (res.get("reason") or not parts):
+        parts.append(_empty_line(res))
+    return "\n".join(parts)
 
 
 def status(db):

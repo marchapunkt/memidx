@@ -36,18 +36,27 @@ def build_server(cfg, host=None, port=None):
     client = cfg.mcp_client
 
     def with_db(fn):
-        db = core.open_db(cfg.db)
+        p = core.index_problem(cfg.db)               # read-only; never creates a database
+        if p:
+            return f"(no usable index) [no_index] {p[1]}"
+        db = core.open_db(cfg.db, readonly=True)
         try:
             return fn(db)
         finally:
             db.close()
 
+    def search_text(db, query, k, budget_tokens, zone):
+        res = core.search(db, query, max(1, min(k, 10)), max(200, min(budget_tokens, 4000)), zone, client=client)
+        text = core.render_text(res)
+        if res.get("private_excluded"):
+            text += "\n\n(private paths were not searched)"
+        return text
+
     @mcp.tool()
     def memory_search(query: str, k: int = 3, budget_tokens: int = 800, zone: str | None = None) -> str:
         """Searches the whole knowledge base and returns only the matching SECTIONS (source path, heading,
         lines) within a token budget. `zone` optionally limits the search to one configured zone."""
-        return with_db(lambda db: core.render_text(core.search(db, query, max(1, min(k, 10)),
-                                                               max(200, min(budget_tokens, 4000)), zone, client=client)))
+        return with_db(lambda db: search_text(db, query, k, budget_tokens, zone))
 
     @mcp.tool()
     def memory_get(path: str, from_line: int = 1, to_line: int = 0) -> str:

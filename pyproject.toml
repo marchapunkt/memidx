@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memidx"
-version = "0.1.0"
+version = "0.2.0"
 description = "Section-level hybrid search (SQLite FTS5 + optional local embeddings) over the Markdown files of a git repository."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# Local embeddings (EmbeddingGemma-300m ONNX on CPU). Model files are not bundled: see `memidx model download`.
+# Local embeddings (ONNX on CPU). memidx ships no model: see `memidx model list` and `memidx model download <preset>`.
 vectors = [
     "numpy>=1.26",
     "onnxruntime>=1.18",

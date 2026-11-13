@@ -6,7 +6,7 @@ from datetime import date
 import pytest
 
 from memidx import core
-from memidx.config import EXAMPLE, Config, ZoneRule, load_config, today_in
+from memidx.config import EXAMPLE, EXAMPLE_CORPUS, Config, ZoneRule, default_db_path, is_inside, load_config, today_in
 
 
 def toml(path, text):
@@ -24,17 +24,24 @@ def test_neutral_defaults(tmp_path):
     assert cfg.memory_entries_prefix == "" and cfg.log_path == ""
     assert cfg.languages == ("de", "en")
     assert cfg.host == "127.0.0.1" and cfg.mcp_host == "127.0.0.1"
-    assert cfg.db == str((tmp_path / ".memidx" / "index.db").resolve())
+    assert cfg.db == default_db_path(tmp_path, {}) and not is_inside(cfg.db, tmp_path)   # outside the corpus
+    assert cfg.vectors is False and cfg.model == "" and cfg.git_safe_directory is False
     core.configure(cfg)
     assert not core.sees_private("own:me") or cfg.private_prefixes == ()
     assert not core.is_private("private/x.md")
 
 
 def test_example_config_parses_to_defaults(tmp_path):
-    p = toml(tmp_path / "memidx.toml", EXAMPLE)
+    p = toml(tmp_path / "memidx.toml", EXAMPLE_CORPUS)
     cfg = load_config(corpus=str(tmp_path), env={})
-    assert cfg.source == str(p)
+    assert cfg.source == str(p) and cfg.notices == ()                    # corpus example: only allowed keys
+    full = toml(tmp_path / "user" / "full.toml", EXAMPLE)
+    cfg2 = load_config(str(full), corpus=str(tmp_path / "other"), env={})
     d = Config()
+    for f in ("vectors", "model", "git_safe_directory", "private_prefixes", "own_client_prefix", "private_mode",
+              "log_path", "host", "port", "mcp_host", "mcp_port", "mcp_client", "interval", "ranking", "default_zone",
+              "vector_min_weight", "memory_entries_prefix"):
+        assert getattr(cfg2, f) == getattr(d, f), f
     for f in ("languages", "timezone", "zones", "default_zone", "vector_min_weight", "exclude", "hints", "renames",
               "private_prefixes", "own_client_prefix", "private_mode", "memory_entries_prefix", "ranking", "log_path",
               "vectors", "host", "port", "mcp_host", "mcp_port", "mcp_client", "interval"):
@@ -88,9 +95,9 @@ def test_relative_paths_are_relative_to_config_file(tmp_path):
                                   '[[zones]]\nname = "x"', '[[zones]]\nname = "x"\nprefix = "a/"\nbasename = "b*"',
                                   '[server]\nprot = 1'])
 def test_invalid_config_raises(tmp_path, text):
-    toml(tmp_path / "memidx.toml", text)
+    p = toml(tmp_path / "trusted.toml", text)                             # trusted file: strict
     with pytest.raises(ValueError):
-        load_config(corpus=str(tmp_path), env={})
+        load_config(str(p), corpus=str(tmp_path), env={})
 
 
 def test_zone_rules(tmp_path):

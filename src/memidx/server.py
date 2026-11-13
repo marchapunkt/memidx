@@ -42,8 +42,22 @@ def make_handler(db):
         def _json(self, obj, code=200):
             self._send(code, "application/json", json.dumps(obj, ensure_ascii=False))
 
+        def _no_index(self, detail, message):
+            self._json({"reason": "no_index", "detail": detail, "message": message}, 503)
+
         def do_GET(self):
-            conn = shared if shared is not None else core.open_db(dbpath)
+            if shared is None:
+                p = core.index_problem(dbpath)
+                if p:
+                    self._no_index(*p)
+                    return
+                conn = core.open_db(dbpath, readonly=True)       # never creates a database
+            else:
+                conn = shared
+                p = core.connection_problem(conn)
+                if p:
+                    self._no_index(*p)
+                    return
             try:
                 self._route(conn)
             except ValueError as e:
@@ -61,12 +75,13 @@ def make_handler(db):
             if u.path == "/search":
                 res = core.search(db, g("q"), int(g("k", "3")), int(g("budget", "800")), g("zone") or None,
                                   client=g("client", "http"), include_invalid=include_invalid)
+                code = 400 if res.get("reason") in ("empty_query", "unknown_zone") else 200
                 if g("mode") == "list":
-                    self._send(200, "text/plain", core.render_list(res))
+                    self._send(code, "text/plain", core.render_list(res))
                 elif g("mode") == "text":
-                    self._send(200, "text/plain", core.render_text(res))
+                    self._send(code, "text/plain", core.render_text(res))
                 else:
-                    self._json(res)
+                    self._json(res, code)
             elif u.path == "/doc":
                 txt = core.get_lines(db, g("path"), int(g("from", "1")), int(g("to", "0")), client=g("client") or None)
                 self._send(200 if txt else 404, "text/plain", txt or "unknown path")
@@ -93,7 +108,7 @@ def make_handler(db):
                                  f'{html.escape(t["section"])} · lines {t["lines"]} · {html.escape(t["zone"])}</div>'
                                  f'<pre>{html.escape(t["text"])}</pre></div>')
                     if not res["hits"]:
-                        body += "<p>(no hits)</p>"
+                        body += f"<p>{html.escape(core.render_text({**res, 'hints': []}))}</p>"
                 self._send(200, "text/html", PAGE.replace("{q}", html.escape(q)).replace("{body}", body))
             else:
                 self._send(404, "text/plain", "not found")
@@ -118,8 +133,12 @@ def auto_update(corpus, dbpath, interval, embed, stop=None):
 
 def _mcp_child(cfg):
     args = [sys.executable, "-m", "memidx.cli", "--corpus", cfg.corpus, "--db", cfg.db]
-    if cfg.source:
-        args += ["--config", cfg.source]
+    if cfg.explicit_config:
+        args += ["--config", cfg.explicit_config]
+    if cfg.isolated:
+        args += ["--isolated"]
+    if not cfg.corpus_config:
+        args += ["--no-corpus-config"]
     args += ["mcp", "--transport", "streamable-http", "--host", cfg.mcp_host, "--port", str(cfg.mcp_port)]
     return subprocess.Popen(args)
 
@@ -132,9 +151,11 @@ def serve(cfg, host=None, port=None, interval=None, embed=False, auto=True, with
     interval = cfg.interval if interval is None else interval
     stop = threading.Event()
     if auto:
-        run_update(cfg.corpus, cfg.db, embed)
-    elif not os.path.exists(cfg.db):
-        raise SystemExit(f"no index at {cfg.db}; run `memidx update` first")
+        run_update(cfg.corpus, cfg.db, embed)       # an update: the only path that may create the index
+    else:
+        p = core.index_problem(cfg.db)
+        if p:
+            raise core.NoIndex(*p)
     threading.Thread(target=core.warm_graph, args=(cfg.db,), daemon=True).start()
     if auto and interval > 0:
         threading.Thread(target=auto_update, args=(cfg.corpus, cfg.db, interval, embed, stop), daemon=True).start()
@@ -146,7 +167,7 @@ def serve(cfg, host=None, port=None, interval=None, embed=False, auto=True, with
         raise KeyboardInterrupt
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, _term)   # Python ignores SIGTERM as PID 1 without a handler
-    db = core.open_db(cfg.db)
+    db = core.open_db(cfg.db, readonly=True)
     try:
         st = core.status(db)
     finally:
